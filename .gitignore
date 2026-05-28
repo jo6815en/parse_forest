@@ -1,0 +1,4 @@
+frames/
+forest_colmap/images
+forest_colmap/dataset
+*.mp4
