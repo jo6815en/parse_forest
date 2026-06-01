@@ -1,4 +1,8 @@
 frames/
 forest_colmap/images
 forest_colmap/dataset
+forest_colmap/dense
+forest_colmap/sparse
+database.db
 *.mp4
+.venv/
