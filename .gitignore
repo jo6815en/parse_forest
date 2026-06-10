@@ -3,6 +3,9 @@ forest_colmap/images
 forest_colmap/dataset
 forest_colmap/dense
 forest_colmap/sparse
+forest_colmap/fused_yup.bin
 database.db
 *.mp4
 .venv/
+toJohanna/
+working_requirements.txt

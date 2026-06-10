@@ -71,7 +71,16 @@ def read_rotation_from_images_txt(images_txt_path, image_path):
 
             if colmap_image_name == image_name:
                 q = np.array(list(map(float, parts[1:5])), dtype=float)
-                return qvec2rotmat(q)
+
+                A = np.array([
+                    [ 0.992634892464,  0.072190538049,  0.097285658121],
+                    [ 0.097285658121, -0.953564167023, -0.285045415163],
+                    [ 0.072190538049,  0.292410522699, -0.953564167023],
+                ])
+
+                R_old = qvec2rotmat(q)
+                R_new = A @ R_old
+                return R_new
 
             i += 2
         else:
@@ -108,6 +117,8 @@ def main():
     im_undist = cv2.undistort(im, K, dist)
 
     R = read_rotation_from_images_txt(args.images_txt, image_path)
+
+    print("Rotation matrix R: ", R)
 
     im_rect, H = rectification_image_from_rot_K(im_undist, R, K)
 
