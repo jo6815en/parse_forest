@@ -7,5 +7,6 @@ forest_colmap/fused_yup.bin
 database.db
 *.mp4
 .venv/
+__pycache__
 toJohanna/
 working_requirements.txt
