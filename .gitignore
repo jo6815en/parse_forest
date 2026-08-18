@@ -1,12 +1,6 @@
-frames/
-forest_colmap/images
-forest_colmap/dataset
-forest_colmap/dense
-forest_colmap/sparse
-forest_colmap/fused_yup.bin
-database.db
+datasets/
+outputs/
 *.mp4
 .venv/
 __pycache__
-toJohanna/
 working_requirements.txt
