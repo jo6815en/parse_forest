@@ -1,9 +1,33 @@
-import os, re, json, shutil
+import argparse
+import json
+import re
+import shutil
+from pathlib import Path
+
 import numpy as np
 
-IMAGES_TXT = "sparse_txt/images.txt"
-IMAGE_DIR = "images"
-OUT_DIR = "dataset"
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Export a COLMAP dataset into a standardized reconstruction format.")
+    parser.add_argument(
+        "--dataset",
+        default="forest_colmap",
+        help="Dataset folder name under datasets/ (for example: forest_colmap or campus)",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+DATASET_NAME = args.dataset
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATASET_ROOT = REPO_ROOT / "datasets" / DATASET_NAME
+COLMAP_DIR = DATASET_ROOT / "colmap"
+
+IMAGES_TXT = COLMAP_DIR / "sparse_txt" / "images.txt"
+IMAGE_DIR = COLMAP_DIR / "images"
+OUT_DIR = DATASET_ROOT / "reconstruction"
+
 
 def qvec2rotmat(q):
     qw, qx, qy, qz = q
@@ -13,9 +37,11 @@ def qvec2rotmat(q):
         [2*qx*qz - 2*qy*qw, 2*qy*qz + 2*qx*qw, 1 - 2*qx*qx - 2*qy*qy]
     ])
 
+
 def frame_number(name):
     m = re.search(r"(\d+)", name)
     return int(m.group(1)) if m else -1
+
 
 def camera_to_world(q, t):
     R = qvec2rotmat(q)
@@ -26,88 +52,94 @@ def camera_to_world(q, t):
     T_wc[:3, 3] = -R.T @ t
     return T_wc
 
-poses = {}
 
-with open(IMAGES_TXT) as f:
-    lines = f.readlines()
+def main():
+    poses = {}
 
-i = 0
-while i < len(lines):
-    line = lines[i].strip()
+    with open(IMAGES_TXT) as f:
+        lines = f.readlines()
 
-    if line.startswith("#") or line == "":
-        i += 1
-        continue
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
 
-    parts = line.split()
+        if line.startswith("#") or line == "":
+            i += 1
+            continue
 
-    try:
-        int(parts[0])
-    except ValueError:
-        i += 1
-        continue
+        parts = line.split()
 
-    q = list(map(float, parts[1:5]))
-    t = list(map(float, parts[5:8]))
-    name = parts[9]
+        try:
+            int(parts[0])
+        except ValueError:
+            i += 1
+            continue
 
-    poses[name] = camera_to_world(q, t)
+        q = list(map(float, parts[1:5]))
+        t = list(map(float, parts[5:8]))
+        name = parts[9]
 
-    i += 2
+        poses[name] = camera_to_world(q, t)
 
-names = sorted(poses.keys(), key=frame_number)
+        i += 2
 
-os.makedirs(f"{OUT_DIR}/images", exist_ok=True)
+    names = sorted(poses.keys(), key=frame_number)
 
-metadata = {
-    "pose_convention": "T_ab maps coordinates from camera/frame a to camera/frame b",
-    "scale": "COLMAP scale is arbitrary unless externally calibrated",
-    "num_frames": len(names),
-    "frames": []
-}
+    (OUT_DIR / "images").mkdir(parents=True, exist_ok=True)
 
-for idx, name in enumerate(names):
-    new_name = f"{idx:06d}.jpg"
+    metadata = {
+        "pose_convention": "T_ab maps coordinates from camera/frame a to camera/frame b",
+        "scale": "COLMAP scale is arbitrary unless externally calibrated",
+        "num_frames": len(names),
+        "frames": []
+    }
 
-    shutil.copy(
-        os.path.join(IMAGE_DIR, name),
-        os.path.join(OUT_DIR, "images", new_name)
-    )
+    for idx, name in enumerate(names):
+        new_name = f"{idx:06d}.jpg"
 
-    metadata["frames"].append({
-        "index": idx,
-        "original_name": name,
-        "dataset_name": new_name,
-        "T_world_camera": poses[name].tolist()
-    })
+        shutil.copy(
+            IMAGE_DIR / name,
+            OUT_DIR / "images" / new_name,
+        )
 
-relative = []
+        metadata["frames"].append({
+            "index": idx,
+            "original_name": name,
+            "dataset_name": new_name,
+            "T_world_camera": poses[name].tolist()
+        })
 
-for idx in range(len(names) - 1):
-    a = names[idx]
-    b = names[idx + 1]
+    relative = []
 
-    T_wa = poses[a]
-    T_wb = poses[b]
+    for idx in range(len(names) - 1):
+        a = names[idx]
+        b = names[idx + 1]
 
-    T_ab = np.linalg.inv(T_wb) @ T_wa
+        T_wa = poses[a]
+        T_wb = poses[b]
 
-    relative.append({
-        "from_index": idx,
-        "to_index": idx + 1,
-        "from_image": f"{idx:06d}.jpg",
-        "to_image": f"{idx+1:06d}.jpg",
-        "original_from": a,
-        "original_to": b,
-        "T_ab": T_ab.tolist()
-    })
+        T_ab = np.linalg.inv(T_wb) @ T_wa
 
-with open(f"{OUT_DIR}/metadata.json", "w") as f:
-    json.dump(metadata, f, indent=2)
+        relative.append({
+            "from_index": idx,
+            "to_index": idx + 1,
+            "from_image": f"{idx:06d}.jpg",
+            "to_image": f"{idx+1:06d}.jpg",
+            "original_from": a,
+            "original_to": b,
+            "T_ab": T_ab.tolist()
+        })
 
-with open(f"{OUT_DIR}/relative_poses.json", "w") as f:
-    json.dump(relative, f, indent=2)
+    with open(OUT_DIR / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
 
-print(f"Saved dataset with {len(names)} images")
-print(f"Saved {len(relative)} relative poses")
-print(f"Output: {OUT_DIR}/")
+    with open(OUT_DIR / "relative_poses.json", "w") as f:
+        json.dump(relative, f, indent=2)
+
+    print(f"Saved dataset with {len(names)} images")
+    print(f"Saved {len(relative)} relative poses")
+    print(f"Output: {OUT_DIR}/")
+
+
+if __name__ == "__main__":
+    main()

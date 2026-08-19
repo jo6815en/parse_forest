@@ -1,8 +1,28 @@
-import numpy as np
+import argparse
 from pathlib import Path
 
-inp = Path("sparse_txt")
-out = Path("sparse_yup_txt")
+import numpy as np
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Transform a COLMAP model into a Y-up coordinate convention.")
+    parser.add_argument(
+        "--dataset",
+        default="forest_colmap",
+        help="Dataset folder name under datasets/ (for example: forest_colmap or campus)",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+DATASET_NAME = args.dataset
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATASET_ROOT = REPO_ROOT / "datasets" / DATASET_NAME
+COLMAP_DIR = DATASET_ROOT / "colmap"
+
+inp = COLMAP_DIR / "sparse_txt"
+out = COLMAP_DIR / "sparse_yup_txt"
 out.mkdir(exist_ok=True)
 
 R_plane = np.array([
@@ -25,6 +45,7 @@ R_yup = np.array([
 
 A = R_yup @ R_flip @ R_plane
 
+
 def qvec2rotmat(q):
     w, x, y, z = q
     return np.array([
@@ -32,6 +53,7 @@ def qvec2rotmat(q):
         [2*x*y+2*z*w, 1-2*x*x-2*z*z, 2*y*z-2*x*w],
         [2*x*z-2*y*w, 2*y*z+2*x*w, 1-2*x*x-2*y*y],
     ])
+
 
 def rotmat2qvec(R):
     K = np.array([
@@ -46,53 +68,59 @@ def rotmat2qvec(R):
         q *= -1
     return q
 
-# copy unchanged files if they exist
-for name in ["cameras.txt", "rigs.txt", "frames.txt"]:
-    if (inp/name).exists():
-        (out/name).write_text((inp/name).read_text())
 
-# transform points3D
-with open(inp/"points3D.txt") as f, open(out/"points3D.txt", "w") as g:
-    for line in f:
-        if line.startswith("#") or not line.strip():
-            g.write(line)
-            continue
-        p = line.split()
-        xyz = np.array(list(map(float, p[1:4])))
-        xyz2 = A @ xyz
-        p[1:4] = [f"{v:.12f}" for v in xyz2]
-        g.write(" ".join(p) + "\n")
+def main():
+    # copy unchanged files if they exist
+    for name in ["cameras.txt", "rigs.txt", "frames.txt"]:
+        if (inp/name).exists():
+            (out/name).write_text((inp/name).read_text())
 
-# transform camera poses
-with open(inp/"images.txt") as f, open(out/"images.txt", "w") as g:
-    lines = f.readlines()
+    # transform points3D
+    with open(inp/"points3D.txt") as f, open(out/"points3D.txt", "w") as g:
+        for line in f:
+            if line.startswith("#") or not line.strip():
+                g.write(line)
+                continue
+            p = line.split()
+            xyz = np.array(list(map(float, p[1:4])))
+            xyz2 = A @ xyz
+            p[1:4] = [f"{v:.12f}" for v in xyz2]
+            g.write(" ".join(p) + "\n")
 
-i = 0
-with open(out/"images.txt", "w") as g:
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith("#") or not line.strip():
-            g.write(line)
-            i += 1
-            continue
+    # transform camera poses
+    with open(inp/"images.txt") as f:
+        lines = f.readlines()
 
-        p = line.split()
-        q = np.array(list(map(float, p[1:5])))
-        t = np.array(list(map(float, p[5:8])))
+    i = 0
+    with open(out/"images.txt", "w") as g:
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("#") or not line.strip():
+                g.write(line)
+                i += 1
+                continue
 
-        Rcw_old = qvec2rotmat(q)
-        C_old = -Rcw_old.T @ t
-        C_new = A @ C_old
-        Rcw_new = Rcw_old @ A.T
-        t_new = -Rcw_new @ C_new
-        q_new = rotmat2qvec(Rcw_new)
+            p = line.split()
+            q = np.array(list(map(float, p[1:5])))
+            t = np.array(list(map(float, p[5:8])))
 
-        p[1:5] = [f"{v:.12f}" for v in q_new]
-        p[5:8] = [f"{v:.12f}" for v in t_new]
-        g.write(" ".join(p) + "\n")
+            Rcw_old = qvec2rotmat(q)
+            C_old = -Rcw_old.T @ t
+            C_new = A @ C_old
+            Rcw_new = Rcw_old @ A.T
+            t_new = -Rcw_new @ C_new
+            q_new = rotmat2qvec(Rcw_new)
 
-        if i + 1 < len(lines):
-            g.write(lines[i+1])
-        i += 2
+            p[1:5] = [f"{v:.12f}" for v in q_new]
+            p[5:8] = [f"{v:.12f}" for v in t_new]
+            g.write(" ".join(p) + "\n")
 
-print("Skrev transformerad modell till sparse_yup_txt/")
+            if i + 1 < len(lines):
+                g.write(lines[i+1])
+            i += 2
+
+    print(f"Skrev transformerad modell till {out}/")
+
+
+if __name__ == "__main__":
+    main()

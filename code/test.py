@@ -1,5 +1,25 @@
+import argparse
 from pathlib import Path
+
 import numpy as np
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Inspect a specific image pose in a selected dataset.")
+    parser.add_argument(
+        "--dataset",
+        default="forest_colmap",
+        help="Dataset folder name under datasets/ (for example: forest_colmap or campus)",
+    )
+    return parser.parse_args()
+
+
+args = parse_args()
+DATASET_NAME = args.dataset
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATASET_ROOT = REPO_ROOT / "datasets" / DATASET_NAME
+COLMAP_DIR = DATASET_ROOT / "colmap"
 
 
 def qvec2rotmat(q):
@@ -20,58 +40,62 @@ def qvec2rotmat(q):
     ])
 
 
-IMAGE_NAME = "frame_00001.jpg"
-IMAGES_TXT = "sparse_yup_txt/images.txt"
+def main():
+    IMAGE_NAME = "frame_00001.jpg"
+    IMAGES_TXT = COLMAP_DIR / "sparse_yup_txt" / "images.txt"
+
+    with open(IMAGES_TXT, "r") as f:
+        lines = f.readlines()
+
+    q = None
+
+    for line in lines:
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split()
+
+        if len(parts) >= 10:
+            name = Path(parts[9]).name
+
+            if name == IMAGE_NAME:
+                q = np.array(list(map(float, parts[1:5])))
+                break
+
+    if q is None:
+        raise RuntimeError(f"Could not find {IMAGE_NAME}")
+
+    print("Quaternion:")
+    print(q)
+
+    R_cw = qvec2rotmat(q)
+
+    print("\nR_cw (world -> camera):")
+    print(R_cw)
+
+    R_wc = R_cw.T
+
+    print("\nR_wc (camera -> world):")
+    print(R_wc)
+
+    x_cam = R_wc[:, 0]
+    y_cam = R_wc[:, 1]
+    z_cam = R_wc[:, 2]
+
+    print("\nCamera axes expressed in world coordinates:")
+    print("x_cam =", x_cam)
+    print("y_cam =", y_cam)
+    print("z_cam =", z_cam)
+
+    world_up = np.array([0, 1, 0])
+
+    print("\nDot products with world up [0,1,0]:")
+    print("x·up =", np.dot(x_cam, world_up))
+    print("y·up =", np.dot(y_cam, world_up))
+    print("z·up =", np.dot(z_cam, world_up))
 
 
-with open(IMAGES_TXT, "r") as f:
-    lines = f.readlines()
-
-q = None
-
-for line in lines:
-    line = line.strip()
-
-    if not line or line.startswith("#"):
-        continue
-
-    parts = line.split()
-
-    if len(parts) >= 10:
-        name = Path(parts[9]).name
-
-        if name == IMAGE_NAME:
-            q = np.array(list(map(float, parts[1:5])))
-            break
-
-if q is None:
-    raise RuntimeError(f"Could not find {IMAGE_NAME}")
-
-print("Quaternion:")
-print(q)
-
-R_cw = qvec2rotmat(q)
-
-print("\nR_cw (world -> camera):")
-print(R_cw)
-
-R_wc = R_cw.T
-
-print("\nR_wc (camera -> world):")
-print(R_wc)
-
-x_cam = R_wc[:, 0]
-y_cam = R_wc[:, 1]
-z_cam = R_wc[:, 2]
-
-print("\nCamera axes expressed in world coordinates:")
-print("x_cam =", x_cam)
-print("y_cam =", y_cam)
-print("z_cam =", z_cam)
-
-world_up = np.array([0, 1, 0])
-
-print("\nDot products with world up [0,1,0]:")
-print("x·up =", np.dot(x_cam, world_up))
-print("y·up =", np.dot(y_cam, world_up))
-print("z·up =", np.dot(z_cam, world_up))
+if __name__ == "__main__":
+    main()

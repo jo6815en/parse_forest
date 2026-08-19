@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import cv2
@@ -9,13 +10,30 @@ from undistort_and_rectify import (
     read_rotation_from_images_txt,
 )
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Rectify all images for a selected dataset.")
+    parser.add_argument(
+        "--dataset",
+        default="forest_colmap",
+        help="Dataset folder name under datasets/ (for example: forest_colmap or campus)",
+    )
+    return parser.parse_args()
+
+
 # ========= KONFIGURATION =========
+args = parse_args()
+DATASET_NAME = args.dataset
 
-IMAGE_DIR = Path("dense/images")
-OUTPUT_DIR = Path("dense/images_rectified")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATASET_ROOT = REPO_ROOT / "datasets" / DATASET_NAME
+COLMAP_DIR = DATASET_ROOT / "colmap"
 
-CAMERAS_TXT = "sparse_txt/cameras.txt"
-IMAGES_TXT = "sparse_yup_txt/images.txt"
+IMAGE_DIR = COLMAP_DIR / "dense" / "images"
+OUTPUT_DIR = COLMAP_DIR / "dense" / "images_rectified"
+
+CAMERAS_TXT = COLMAP_DIR / "sparse_txt" / "cameras.txt"
+IMAGES_TXT = COLMAP_DIR / "sparse_yup_txt" / "images.txt"
 # ================================
 
 
