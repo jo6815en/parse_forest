@@ -9,27 +9,22 @@ import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Export a COLMAP dataset into a standardized reconstruction format."
+        description="Export a transformed COLMAP reconstruction."
     )
+
     parser.add_argument(
         "--dataset",
-        default="forest_colmap",
-        help="Dataset folder name under datasets/ (for example: forest_colmap or campus)",
+        required=True,
+        help="Dataset folder under datasets/, for example: torpa",
     )
+
+    parser.add_argument(
+        "--run",
+        required=True,
+        help="Reconstruction run, for example: 20260824_142747",
+    )
+
     return parser.parse_args()
-
-
-args = parse_args()
-DATASET_NAME = args.dataset
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-DATASET_ROOT = REPO_ROOT / "datasets" / DATASET_NAME
-COLMAP_DIR = DATASET_ROOT / "colmap"
-
-IMAGES_TXT = COLMAP_DIR / "sparse_txt" / "images.txt"
-IMAGE_DIR = DATASET_ROOT / "images"
-
-OUT_DIR = DATASET_ROOT / "reconstruction"
 
 
 def qvec2rotmat(q):
@@ -37,7 +32,7 @@ def qvec2rotmat(q):
     COLMAP quaternion convention:
     q = [qw, qx, qy, qz]
 
-    Returns the COLMAP world-to-camera rotation matrix R.
+    Returns the world-to-camera / world-to-rig rotation.
     """
     qw, qx, qy, qz = q
 
@@ -60,21 +55,17 @@ def qvec2rotmat(q):
     ])
 
 
-def frame_number(name):
-    m = re.search(r"(\d+)", name)
-    return int(m.group(1)) if m else -1
-
-
 def camera_to_world(q, t):
     """
-    Convert COLMAP's world-to-camera pose into camera-to-world.
+    Convert COLMAP world-to-rig/world-to-camera pose to
+    rig/camera-to-world.
 
     COLMAP:
-        x_camera = R * x_world + t
+        x_rig = R * x_world + t
 
     Therefore:
-        R_cw = R^T
-        C_world = -R^T * t
+        R_world = R.T
+        C_world = -R.T @ t
     """
     R = qvec2rotmat(q)
     t = np.asarray(t, dtype=float)
@@ -86,57 +77,22 @@ def camera_to_world(q, t):
     return T_camera_to_world
 
 
-def rotation_matrix_to_quaternion(R):
+def frame_number(name):
+    match = re.search(r"(\d+)", name)
+    return int(match.group(1)) if match else -1
+
+
+def read_images(images_txt):
     """
-    Convert a 3x3 rotation matrix to quaternion [qw, qx, qy, qz].
+    Read images.txt and return metadata indexed by IMAGE_ID.
+
+    COLMAP images.txt contains two lines per image:
+        IMAGE_ID QW QX QY QZ TX TY TZ CAMERA_ID NAME
+        POINTS2D...
     """
-    trace = np.trace(R)
+    images = {}
 
-    if trace > 0:
-        s = 0.5 / np.sqrt(trace + 1.0)
-        qw = 0.25 / s
-        qx = (R[2, 1] - R[1, 2]) * s
-        qy = (R[0, 2] - R[2, 0]) * s
-        qz = (R[1, 0] - R[0, 1]) * s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-        qw = (R[2, 1] - R[1, 2]) / s
-        qx = 0.25 * s
-        qy = (R[0, 1] + R[1, 0]) / s
-        qz = (R[0, 2] + R[2, 0]) / s
-    elif R[1, 1] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-        qw = (R[0, 2] - R[2, 0]) / s
-        qx = (R[0, 1] + R[1, 0]) / s
-        qy = 0.25 * s
-        qz = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-        qw = (R[1, 0] - R[0, 1]) / s
-        qx = (R[0, 2] + R[2, 0]) / s
-        qy = (R[1, 2] + R[2, 1]) / s
-        qz = 0.25 * s
-
-    q = np.array([qw, qx, qy, qz], dtype=float)
-    q /= np.linalg.norm(q)
-
-    return q
-
-
-def main():
-    poses = {}
-
-    if not IMAGES_TXT.exists():
-        raise FileNotFoundError(
-            f"COLMAP images.txt not found: {IMAGES_TXT}"
-        )
-
-    if not IMAGE_DIR.exists():
-        raise FileNotFoundError(
-            f"Image directory not found: {IMAGE_DIR}"
-        )
-
-    with open(IMAGES_TXT, "r") as f:
+    with open(images_txt, "r") as f:
         lines = f.readlines()
 
     i = 0
@@ -144,98 +100,278 @@ def main():
     while i < len(lines):
         line = lines[i].strip()
 
-        if line.startswith("#") or line == "":
+        if not line or line.startswith("#"):
             i += 1
             continue
 
         parts = line.split()
 
         try:
-            int(parts[0])
-        except ValueError:
+            image_id = int(parts[0])
+        except (ValueError, IndexError):
             i += 1
             continue
 
-        # COLMAP images.txt:
-        # IMAGE_ID QW QX QY QZ TX TY TZ CAMERA_ID NAME
-        q = list(map(float, parts[1:5]))
-        t = list(map(float, parts[5:8]))
+        if len(parts) < 10:
+            i += 1
+            continue
+
         camera_id = int(parts[8])
         name = parts[9]
 
-        T_camera_to_world = camera_to_world(q, t)
-
-        poses[name] = {
+        images[image_id] = {
             "camera_id": camera_id,
-            "q_colmap": q,
-            "t_colmap": t,
-            "T_camera_to_world": T_camera_to_world,
+            "name": name,
         }
 
-        # Skip the following 2D-point line.
+        # Skip the POINTS2D line.
         i += 2
 
-    names = sorted(poses.keys(), key=frame_number)
+    return images
 
-    (OUT_DIR / "images").mkdir(parents=True, exist_ok=True)
+
+def read_frames(frames_txt):
+    """
+    Read frames.txt.
+
+    COLMAP format:
+        FRAME_ID RIG_ID
+        QW QX QY QZ TX TY TZ
+        NUM_DATA_IDS
+        SENSOR_TYPE SENSOR_ID DATA_ID ...
+
+    The pose is RIG_FROM_WORLD.
+
+    Returns:
+        image_id -> frame pose
+    """
+    poses = {}
+
+    with open(frames_txt, "r") as f:
+        lines = f.readlines()
+
+    for line in lines:
+        line = line.strip()
+
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split()
+
+        if len(parts) < 10:
+            continue
+
+        try:
+            int(parts[0])  # FRAME_ID
+            int(parts[1])  # RIG_ID
+        except ValueError:
+            continue
+
+        q = list(map(float, parts[2:6]))
+        t = list(map(float, parts[6:9]))
+
+        num_data_ids = int(parts[9])
+
+        T_camera_to_world = camera_to_world(q, t)
+
+        offset = 10
+
+        for _ in range(num_data_ids):
+            if offset + 2 >= len(parts):
+                break
+
+            sensor_type = parts[offset]
+            sensor_id = parts[offset + 1]
+            data_id = int(parts[offset + 2])
+
+            # For the current dataset, each rig contains one camera
+            # and each frame contains one image.
+            poses[data_id] = {
+                "sensor_type": sensor_type,
+                "sensor_id": sensor_id,
+                "T_camera_to_world": T_camera_to_world,
+            }
+
+            offset += 3
+
+    return poses
+
+
+def main():
+    args = parse_args()
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    dataset_root = (
+        repo_root
+        / "datasets"
+        / args.dataset
+    )
+
+    run_root = (
+        dataset_root
+        / "reconstructions"
+        / args.run
+    )
+
+    colmap_dir = run_root / "colmap"
+
+    # --------------------------------------------------
+    # IMPORTANT:
+    # Read the Y-up transformed model.
+    # --------------------------------------------------
+
+    model_dir = colmap_dir / "sparse_yup_txt"
+
+    images_txt = model_dir / "images.txt"
+    frames_txt = model_dir / "frames.txt"
+
+    image_dir = dataset_root / "images"
+
+    out_dir = run_root / "reconstruction"
+    out_images_dir = out_dir / "images"
+
+    if not model_dir.exists():
+        raise FileNotFoundError(
+            f"Could not find transformed COLMAP model:\n{model_dir}"
+        )
+
+    if not images_txt.exists():
+        raise FileNotFoundError(
+            f"Could not find:\n{images_txt}"
+        )
+
+    if not frames_txt.exists():
+        raise FileNotFoundError(
+            f"Could not find:\n{frames_txt}"
+        )
+
+    if not image_dir.exists():
+        raise FileNotFoundError(
+            f"Could not find image directory:\n{image_dir}"
+        )
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_images_dir.mkdir(parents=True, exist_ok=True)
+
+    # --------------------------------------------------
+    # Read image metadata
+    # --------------------------------------------------
+
+    images = read_images(images_txt)
+
+    # --------------------------------------------------
+    # Read transformed frame poses
+    # --------------------------------------------------
+
+    frame_poses = read_frames(frames_txt)
+
+    # --------------------------------------------------
+    # Connect FRAME DATA_ID -> IMAGE_ID -> image name
+    # --------------------------------------------------
+
+    poses = {}
+
+    for image_id, frame_data in frame_poses.items():
+
+        if image_id not in images:
+            continue
+
+        name = images[image_id]["name"]
+
+        poses[name] = {
+            "image_id": image_id,
+            "camera_id": images[image_id]["camera_id"],
+            "T_camera_to_world": frame_data["T_camera_to_world"],
+        }
+
+    if not poses:
+        raise RuntimeError(
+            "No camera poses could be connected between "
+            "frames.txt and images.txt."
+        )
+
+    names = sorted(
+        poses.keys(),
+        key=frame_number,
+    )
+
+    # --------------------------------------------------
+    # Metadata
+    # --------------------------------------------------
 
     metadata = {
         "pose_convention": (
-            "T_camera_to_world maps coordinates from camera coordinates "
-            "to COLMAP world coordinates."
+            "T_camera_to_world maps camera coordinates "
+            "to Y-up world coordinates."
         ),
+        "world_up_axis": "Y",
         "scale": (
             "COLMAP scale is arbitrary unless externally calibrated."
         ),
         "num_frames": len(names),
+        "source_model": str(model_dir),
         "frames": [],
     }
 
     camera_poses = []
 
+    # --------------------------------------------------
+    # Export images + camera poses
+    # --------------------------------------------------
+
     for idx, name in enumerate(names):
+
         new_name = f"{idx:06d}.jpg"
 
-        source_image = IMAGE_DIR / name
-        target_image = OUT_DIR / "images" / new_name
+        source_image = image_dir / name
+        target_image = out_images_dir / new_name
 
         if not source_image.exists():
             raise FileNotFoundError(
-                f"Image referenced by COLMAP does not exist: {source_image}"
+                f"Image referenced by COLMAP does not exist:\n"
+                f"{source_image}"
             )
 
-        shutil.copy(source_image, target_image)
+        shutil.copy(
+            source_image,
+            target_image,
+        )
 
         T = poses[name]["T_camera_to_world"]
+
         R = T[:3, :3]
         position = T[:3, 3]
-        quaternion = rotation_matrix_to_quaternion(R)
 
         frame_data = {
             "index": idx,
             "original_name": name,
             "dataset_name": new_name,
+            "image_id": poses[name]["image_id"],
             "camera_id": poses[name]["camera_id"],
             "position_world": position.tolist(),
-            "quaternion_wxyz": quaternion.tolist(),
             "rotation_matrix": R.tolist(),
             "T_camera_to_world": T.tolist(),
         }
 
         metadata["frames"].append(frame_data)
-
         camera_poses.append(frame_data)
+
+    # --------------------------------------------------
+    # Relative poses
+    # --------------------------------------------------
 
     relative = []
 
     for idx in range(len(names) - 1):
+
         a = names[idx]
         b = names[idx + 1]
 
         T_wa = poses[a]["T_camera_to_world"]
         T_wb = poses[b]["T_camera_to_world"]
 
-        # Transform coordinates from camera a to camera b.
+        # Coordinates from camera a -> camera b.
         T_a_to_b = np.linalg.inv(T_wb) @ T_wa
 
         relative.append({
@@ -248,19 +384,42 @@ def main():
             "T_a_to_b": T_a_to_b.tolist(),
         })
 
-    with open(OUT_DIR / "metadata.json", "w") as f:
-        json.dump(metadata, f, indent=2)
+    # --------------------------------------------------
+    # Write files
+    # --------------------------------------------------
 
-    with open(OUT_DIR / "camera_poses.json", "w") as f:
-        json.dump(camera_poses, f, indent=2)
+    with open(out_dir / "metadata.json", "w") as f:
+        json.dump(
+            metadata,
+            f,
+            indent=2,
+        )
 
-    with open(OUT_DIR / "relative_poses.json", "w") as f:
-        json.dump(relative, f, indent=2)
+    with open(out_dir / "camera_poses.json", "w") as f:
+        json.dump(
+            camera_poses,
+            f,
+            indent=2,
+        )
 
-    print(f"Saved dataset with {len(names)} images")
-    print(f"Saved {len(names)} camera poses")
-    print(f"Saved {len(relative)} relative poses")
-    print(f"Output: {OUT_DIR}/")
+    with open(out_dir / "relative_poses.json", "w") as f:
+        json.dump(
+            relative,
+            f,
+            indent=2,
+        )
+
+    print()
+    print("Export complete")
+    print("----------------------------------------")
+    print(f"Dataset:          {args.dataset}")
+    print(f"Run:              {args.run}")
+    print(f"Source model:     {model_dir}")
+    print(f"Registered imgs:  {len(names)}")
+    print(f"Relative poses:   {len(relative)}")
+    print(f"World up axis:    Y")
+    print(f"Output:           {out_dir}")
+    print()
 
 
 if __name__ == "__main__":
