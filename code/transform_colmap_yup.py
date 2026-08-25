@@ -241,7 +241,7 @@ def main():
     )
 
     inp = run_root / "sparse_txt"
-    out = run_root / "sparse_yup_txt_v3"
+    out = run_root / "sparse_yup_txt"
 
     matrix_path = Path(args.matrix)
 
