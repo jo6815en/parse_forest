@@ -6,14 +6,6 @@ The pipeline is resumable. Each run lives under:
 datasets/<dataset>/reconstructions/YYYYMMDD_HHMMSS/
 ```
 
-## Install
-
-The dense point-cloud transformer needs `plyfile`:
-
-```bash
-pip install plyfile
-```
-
 ## Start a new run
 
 From the repository root:
