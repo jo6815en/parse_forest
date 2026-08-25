@@ -1,5 +1,7 @@
 datasets/
 outputs/
+.python-version
+frames/
 *.mp4
 .venv/
 __pycache__
