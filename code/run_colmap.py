@@ -258,6 +258,8 @@ def count_registered_images(model_dir, colmap_bin):
     if temp_dir.exists():
         shutil.rmtree(temp_dir)
 
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
     run([
         str(colmap_bin),
         "model_converter",
