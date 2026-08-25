@@ -1,5 +1,5 @@
-numpy==2.4.4
-opencv-python==4.13.0.92
-Pillow==12.2.0
-torch==2.11.0
-torchvision==0.26.0
+numpy
+opencv-python
+Pillow
+torch
+torchvision
