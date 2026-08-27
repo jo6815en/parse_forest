@@ -3,7 +3,6 @@ import re
 import shutil
 import sqlite3
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 
@@ -117,20 +116,58 @@ def find_run(dataset_root, resume_arg):
 
 
 def choose_or_create_run(dataset_root, video_path, resume_arg):
+    recon_root = dataset_root / "reconstructions"
+    recon_root.mkdir(parents=True, exist_ok=True)
+
+    # Resume an existing run.
     if resume_arg:
         run_root = find_run(dataset_root, resume_arg)
         print(f"\nResuming existing run: {run_root}")
         return run_root
 
     if video_path is None:
-        raise ValueError("--video is required when starting a new run.")
+        raise ValueError(
+            "--video is required when starting a new run."
+        )
 
     if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+        raise FileNotFoundError(
+            f"Video not found: {video_path}"
+        )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_root = dataset_root / "reconstructions" / timestamp
+    # Example:
+    # video2.mp4 -> video2
+    video_name = video_path.stem
+
+    # Find existing versions:
+    # video2_v1, video2_v2, ...
+    pattern = re.compile(
+        rf"^{re.escape(video_name)}_v(\d+)$"
+    )
+
+    versions = []
+
+    for path in recon_root.iterdir():
+        if not path.is_dir():
+            continue
+
+        match = pattern.match(path.name)
+
+        if match:
+            versions.append(int(match.group(1)))
+
+    # Pick next available version.
+    next_version = max(versions, default=0) + 1
+
+    run_name = f"{video_name}_v{next_version}"
+
+    run_root = recon_root / run_name
     run_root.mkdir(parents=True, exist_ok=False)
+
+    print(
+        f"\nCreated new reconstruction: {run_name}"
+    )
+
     return run_root
 
 
@@ -303,6 +340,32 @@ def trajectory_ready(reconstruction_dir):
     return (reconstruction_dir / "camera_trajectory.ply").exists()
 
 
+def sparse_quality_check(registered, total):
+    if total == 0:
+        raise RuntimeError("No input frames found.")
+
+    coverage = registered / total
+    percent = coverage * 100
+
+    if coverage >= 0.80:
+        quality = "GOOD"
+    elif coverage >= 0.50:
+        quality = "ACCEPTABLE"
+    else:
+        quality = "POOR"
+
+    print("\n" + "=" * 60)
+    print("SPARSE RECONSTRUCTION QUALITY")
+    print("=" * 60)
+    print(f"Input frames:       {total}")
+    print(f"Registered frames:  {registered}")
+    print(f"Coverage:           {percent:.1f}%")
+    print(f"Quality:            {quality}")
+    print("=" * 60)
+
+    return coverage, quality
+
+
 def main():
     args = parse_args()
     if args.colmap is None:
@@ -448,6 +511,30 @@ def main():
         f"with {registered} registered images."
     )
 
+    coverage, quality = sparse_quality_check(
+    registered,
+    len(images),
+)
+
+    if quality == "POOR":
+        print(
+            "\nWARNING: Less than 50% of the input frames were "
+            "registered in the best sparse model."
+        )
+        print(
+            "Dense reconstruction is not recommended "
+            "before inspecting the sparse model."
+        )
+
+        if not ask_yes_no(
+            "Continue anyway?"
+        ):
+            print(
+                f"\nStopped after sparse reconstruction.\n"
+                f"Run directory: {run_root}"
+            )
+            return
+
     # ---------------------------------------------------------
     # 5. Sparse TXT conversion
     # ---------------------------------------------------------
@@ -467,12 +554,21 @@ def main():
         ])
 
     print(
-        f"\nSparse reconstruction is ready: "
-        f"{registered} registered images."
+        f"\nSparse reconstruction is ready."
     )
 
+    if quality == "GOOD":
+        print(
+            "Sparse coverage is good. "
+            "Dense reconstruction is recommended."
+        )
+    else:
+        print(
+            "Sparse coverage is acceptable. "
+            "Inspect the sparse model before dense reconstruction."
+        )
+
     if not ask_yes_no("Run or resume dense reconstruction?"):
-        print(f"\nStopped after sparse reconstruction.\nRun directory: {run_root}")
         return
 
     # ---------------------------------------------------------
