@@ -412,6 +412,12 @@ def main():
             "sequential_matcher",
             "--database_path",
             database,
+            "--SequentialMatching.overlap",
+            "20",
+            "--SequentialMatching.loop_detection",
+            "1",
+            "--SequentialMatching.loop_detection_num_nearest_neighbors",
+            "5",
         ])
 
     # ---------------------------------------------------------
