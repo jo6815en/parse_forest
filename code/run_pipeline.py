@@ -185,39 +185,29 @@ def database_has_matches(database):
 
 
 def count_registered_images(model_dir, colmap_bin, temp_root):
-    temp_dir = temp_root / f"{model_dir.name}_txt"
-    if temp_dir.exists():
-        shutil.rmtree(temp_dir)
-    temp_dir.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [
+            str(colmap_bin),
+            "model_analyzer",
+            "--path",
+            str(model_dir),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
 
-    run([
-        colmap_bin,
-        "model_converter",
-        "--input_path",
-        model_dir,
-        "--output_path",
-        temp_dir,
-        "--output_type",
-        "TXT",
-    ])
+    match = re.search(
+        r"Registered images:\s*(\d+)",
+        result.stdout + result.stderr,
+    )
 
-    images_txt = temp_dir / "images.txt"
-    count = 0
+    if match is None:
+        raise RuntimeError(
+            f"Could not determine registered image count for {model_dir}"
+        )
 
-    if images_txt.exists():
-        with open(images_txt, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                try:
-                    int(line.split()[0])
-                except (ValueError, IndexError):
-                    continue
-                count += 1
-
-    shutil.rmtree(temp_dir)
-    return count
+    return int(match.group(1))
 
 
 def choose_best_model(sparse_dir, colmap_bin):
