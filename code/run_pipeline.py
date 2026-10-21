@@ -524,6 +524,8 @@ def main():
                 dense_dir,
                 "--output_type",
                 "COLMAP",
+                "--max_image_size",
+                "1200",
             ])
 
         depth_maps = dense_dir / "stereo" / "depth_maps"
@@ -539,6 +541,14 @@ def main():
                 "COLMAP",
                 "--PatchMatchStereo.geom_consistency",
                 "true",
+                "--PatchMatchStereo.depth_min",
+                "0.5",
+                "--PatchMatchStereo.depth_max",
+                "40",
+                "--PatchMatchStereo.gpu_index",
+                "0",
+                "--PatchMatchStereo.num_threads",
+                "1",
             ])
 
         fused = dense_dir / "fused.ply"

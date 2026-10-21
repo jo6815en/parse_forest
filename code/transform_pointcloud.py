@@ -10,6 +10,7 @@ def parse_args():
     parser.add_argument("--run", required=True)
     parser.add_argument("--matrix", required=True)
     parser.add_argument("--dense-dir", default="dense")
+    parser.add_argument("--max-image-size", type=int, default=1200)
     return parser.parse_args()
 
 
