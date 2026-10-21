@@ -3,7 +3,6 @@ import re
 import shutil
 import sqlite3
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 
@@ -31,8 +30,7 @@ def parse_args():
         description="Resumable video -> COLMAP -> Y-up pipeline."
     )
 
-    parser.add_argument(
-        "--dataset",
+    parser.add_argument("--dataset",
         required=True,
         help="Dataset name under datasets/.",
     )
@@ -64,7 +62,7 @@ def parse_args():
         const="latest",
         help=(
             "Resume an existing run. Use --resume for the latest run, "
-            "or --resume RUN_ID for a specific timestamped run."
+            "or --resume RUN_ID for a specific run."
         ),
     )
 
@@ -117,20 +115,45 @@ def find_run(dataset_root, resume_arg):
 
 
 def choose_or_create_run(dataset_root, video_path, resume_arg):
+    recon_root = dataset_root / "reconstructions"
+    recon_root.mkdir(parents=True, exist_ok=True)
+
     if resume_arg:
         run_root = find_run(dataset_root, resume_arg)
         print(f"\nResuming existing run: {run_root}")
         return run_root
 
     if video_path is None:
-        raise ValueError("--video is required when starting a new run.")
+        raise ValueError(
+            "--video is required when starting a new run."
+        )
 
     if not video_path.exists():
-        raise FileNotFoundError(f"Video not found: {video_path}")
+        raise FileNotFoundError(
+            f"Video not found: {video_path}"
+        )
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_root = dataset_root / "reconstructions" / timestamp
+    video_name = video_path.stem
+    pattern = re.compile(
+        rf"^{re.escape(video_name)}_v(\d+)$"
+    )
+
+    versions = []
+
+    for path in recon_root.iterdir():
+        if not path.is_dir():
+            continue
+
+        match = pattern.fullmatch(path.name)
+        if match:
+            versions.append(int(match.group(1)))
+
+    next_version = max(versions, default=0) + 1
+    run_name = f"{video_name}_v{next_version}"
+    run_root = recon_root / run_name
     run_root.mkdir(parents=True, exist_ok=False)
+
+    print(f"\nCreated new reconstruction: {run_name}")
     return run_root
 
 

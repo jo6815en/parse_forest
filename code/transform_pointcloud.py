@@ -9,6 +9,7 @@ def parse_args():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--run", required=True)
     parser.add_argument("--matrix", required=True)
+    parser.add_argument("--dense-dir", default="dense")
     return parser.parse_args()
 
 
@@ -16,8 +17,9 @@ def main():
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     run_root = repo_root / "datasets" / args.dataset / "reconstructions" / args.run / "colmap"
-    input_file = run_root / "dense" / "fused.ply"
-    output_file = run_root / "dense" / "fused_yup.ply"
+    dense_dir = run_root / args.dense_dir
+    input_file = dense_dir / "fused.ply"
+    output_file = dense_dir / "fused_yup.ply"
     matrix_path = Path(args.matrix)
     if not matrix_path.is_absolute():
         matrix_path = repo_root / matrix_path
