@@ -432,6 +432,8 @@ def main():
             database,
             "--image_path",
             images_dir,
+            "--ImageReader.camera_model",
+            "SIMPLE_PINHOLE",
         ])
 
     # ---------------------------------------------------------
@@ -528,6 +530,23 @@ def main():
                 "1200",
             ])
 
+        dense_sparse_txt = dense_dir / "sparse_txt"
+        if sparse_txt_ready(dense_sparse_txt):
+            print("[SKIP] Dense sparse TXT model already exists.")
+        else:
+            dense_sparse_txt.mkdir(parents=True, exist_ok=True)
+
+            run([
+                colmap_bin,
+                "model_converter",
+                "--input_path",
+                dense_dir / "sparse",
+                "--output_path",
+                dense_sparse_txt,
+                "--output_type",
+                "TXT",
+            ])
+
         depth_maps = dense_dir / "stereo" / "depth_maps"
         if depth_maps.exists() and any(depth_maps.iterdir()):
             print("[SKIP] PatchMatch depth maps already exist.")
@@ -549,6 +568,8 @@ def main():
                 "0",
                 "--PatchMatchStereo.num_threads",
                 "1",
+                "--PatchMatchStereo.cache_size",
+                "2",
             ])
 
         fused = dense_dir / "fused.ply"
@@ -566,6 +587,14 @@ def main():
                 "geometric",
                 "--output_path",
                 fused,
+                "--StereoFusion.use_cache",
+                "true",
+                "--StereoFusion.cache_size",
+                "2",
+                "--StereoFusion.num_threads",
+                "1",
+                "--StereoFusion.max_image_size",
+                "1200",
             ])
 
     fused = dense_dir / "fused.ply"
