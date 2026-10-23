@@ -3,6 +3,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -228,16 +229,30 @@ def count_registered_images(model_dir, colmap_bin, temp_root):
     count = 0
 
     if images_txt.exists():
-        with open(images_txt, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                try:
-                    int(line.split()[0])
-                except (ValueError, IndexError):
-                    continue
-                count += 1
+        lines = images_txt.read_text().splitlines()
+        index = 0
+
+        while index < len(lines):
+            line = lines[index].strip()
+
+            if not line or line.startswith("#"):
+                index += 1
+                continue
+
+            parts = line.split()
+            try:
+                if len(parts) < 10:
+                    raise ValueError
+                int(parts[0])
+                int(parts[8])
+            except (ValueError, IndexError):
+                index += 1
+                continue
+
+            count += 1
+            # Each COLMAP image record occupies two lines. The second line
+            # contains its 2D observations and may be empty.
+            index += 2
 
     shutil.rmtree(temp_dir)
     return count
@@ -287,12 +302,14 @@ def sparse_models_exist(sparse_dir):
     )
 
 
-def sparse_txt_ready(sparse_txt):
+def sparse_txt_ready(sparse_txt, require_rig_data=True):
     required = [
         "cameras.txt",
         "images.txt",
         "points3D.txt",
     ]
+    if require_rig_data:
+        required.extend(["frames.txt", "rigs.txt"])
     return all((sparse_txt / name).exists() for name in required)
 
 
@@ -300,12 +317,31 @@ def dense_workspace_ready(dense_dir):
     required = [
         dense_dir / "images",
         dense_dir / "sparse",
+        dense_dir / "stereo" / "patch-match.cfg",
+        dense_dir / "stereo" / "fusion.cfg",
     ]
     return all(path.exists() for path in required)
 
 
 def dense_fused_ready(dense_dir):
-    return (dense_dir / "fused.ply").exists()
+    fused = dense_dir / "fused.ply"
+    return fused.is_file() and fused.stat().st_size > 0
+
+
+def patch_match_progress(dense_dir):
+    dense_images = list_images(dense_dir / "images")
+    depth_maps = dense_dir / "stereo" / "depth_maps"
+
+    if not depth_maps.exists():
+        return len(dense_images), 0, 0
+
+    photometric = sum(
+        1 for path in depth_maps.glob("*.photometric.bin") if path.is_file()
+    )
+    geometric = sum(
+        1 for path in depth_maps.glob("*.geometric.bin") if path.is_file()
+    )
+    return len(dense_images), photometric, geometric
 
 
 def aligned_sparse_ready(sparse_yup):
@@ -314,6 +350,7 @@ def aligned_sparse_ready(sparse_yup):
         "images.txt",
         "points3D.txt",
         "frames.txt",
+        "rigs.txt",
         "world_transform_yup.txt",
     ]
     return all((sparse_yup / name).exists() for name in required)
@@ -434,6 +471,8 @@ def main():
             images_dir,
             "--ImageReader.camera_model",
             "SIMPLE_PINHOLE",
+            "--ImageReader.single_camera",
+            "1",
         ])
 
     # ---------------------------------------------------------
@@ -447,6 +486,10 @@ def main():
             "sequential_matcher",
             "--database_path",
             database,
+            "--SequentialMatching.overlap",
+            "50",
+            "--SequentialMatching.loop_detection",
+            "0",
         ])
 
     # ---------------------------------------------------------
@@ -476,6 +519,19 @@ def main():
         f"\nSelected sparse model {best_model.name} "
         f"with {registered} registered images."
     )
+
+    if registered < len(images):
+        coverage = 100.0 * registered / len(images)
+        print(
+            f"\nWARNING: The best sparse model contains {registered} of "
+            f"{len(images)} input images ({coverage:.1f}%)."
+        )
+        if not ask_yes_no("Continue with this incomplete sparse model?"):
+            print(
+                "\nStopped after sparse reconstruction. "
+                "Inspect the sparse model before dense reconstruction."
+            )
+            return
 
     # ---------------------------------------------------------
     # 5. Sparse TXT conversion
@@ -509,48 +565,58 @@ def main():
     # ---------------------------------------------------------
     dense_dir.mkdir(parents=True, exist_ok=True)
 
+    if dense_workspace_ready(dense_dir):
+        print("[SKIP] Dense workspace already undistorted.")
+    else:
+        run([
+            colmap_bin,
+            "image_undistorter",
+            "--image_path",
+            images_dir,
+            "--input_path",
+            best_model,
+            "--output_path",
+            dense_dir,
+            "--output_type",
+            "COLMAP",
+            "--max_image_size",
+            "1200",
+        ])
+
+    # This text model is needed by export_dataset.py even when fused.ply was
+    # produced manually or in an earlier run.
+    dense_sparse_txt = dense_dir / "sparse_txt"
+    if sparse_txt_ready(dense_sparse_txt, require_rig_data=False):
+        print("[SKIP] Dense sparse TXT model already exists.")
+    else:
+        dense_sparse_txt.mkdir(parents=True, exist_ok=True)
+
+        run([
+            colmap_bin,
+            "model_converter",
+            "--input_path",
+            dense_dir / "sparse",
+            "--output_path",
+            dense_sparse_txt,
+            "--output_type",
+            "TXT",
+        ])
+
     if dense_fused_ready(dense_dir):
         print("[SKIP] Dense fused point cloud already exists.")
     else:
-        if dense_workspace_ready(dense_dir):
-            print("[SKIP] Dense workspace already undistorted.")
-        else:
-            run([
-                colmap_bin,
-                "image_undistorter",
-                "--image_path",
-                images_dir,
-                "--input_path",
-                best_model,
-                "--output_path",
-                dense_dir,
-                "--output_type",
-                "COLMAP",
-                "--max_image_size",
-                "1200",
-            ])
+        expected, photometric, geometric = patch_match_progress(dense_dir)
+        if expected == 0:
+            raise RuntimeError(
+                f"No undistorted JPEG images found in {dense_dir / 'images'}"
+            )
 
-        dense_sparse_txt = dense_dir / "sparse_txt"
-        if sparse_txt_ready(dense_sparse_txt):
-            print("[SKIP] Dense sparse TXT model already exists.")
-        else:
-            dense_sparse_txt.mkdir(parents=True, exist_ok=True)
+        print(
+            f"PatchMatch progress: {photometric}/{expected} photometric, "
+            f"{geometric}/{expected} geometric."
+        )
 
-            run([
-                colmap_bin,
-                "model_converter",
-                "--input_path",
-                dense_dir / "sparse",
-                "--output_path",
-                dense_sparse_txt,
-                "--output_type",
-                "TXT",
-            ])
-
-        depth_maps = dense_dir / "stereo" / "depth_maps"
-        if depth_maps.exists() and any(depth_maps.iterdir()):
-            print("[SKIP] PatchMatch depth maps already exist.")
-        else:
+        if geometric < expected:
             run([
                 colmap_bin,
                 "patch_match_stereo",
@@ -560,10 +626,8 @@ def main():
                 "COLMAP",
                 "--PatchMatchStereo.geom_consistency",
                 "true",
-                "--PatchMatchStereo.depth_min",
-                "0.5",
-                "--PatchMatchStereo.depth_max",
-                "40",
+                "--PatchMatchStereo.max_image_size",
+                "1200",
                 "--PatchMatchStereo.gpu_index",
                 "0",
                 "--PatchMatchStereo.num_threads",
@@ -572,30 +636,37 @@ def main():
                 "2",
             ])
 
+            expected, photometric, geometric = patch_match_progress(dense_dir)
+
+        if geometric < expected:
+            raise RuntimeError(
+                f"PatchMatch is incomplete: {geometric}/{expected} "
+                "geometric depth maps. Resume the same run."
+            )
+
+        print(f"PatchMatch complete: {geometric}/{expected} geometric maps.")
+
         fused = dense_dir / "fused.ply"
-        if fused.exists():
-            print("[SKIP] Stereo fusion already exists.")
-        else:
-            run([
-                colmap_bin,
-                "stereo_fusion",
-                "--workspace_path",
-                dense_dir,
-                "--workspace_format",
-                "COLMAP",
-                "--input_type",
-                "geometric",
-                "--output_path",
-                fused,
-                "--StereoFusion.use_cache",
-                "true",
-                "--StereoFusion.cache_size",
-                "2",
-                "--StereoFusion.num_threads",
-                "1",
-                "--StereoFusion.max_image_size",
-                "1200",
-            ])
+        run([
+            colmap_bin,
+            "stereo_fusion",
+            "--workspace_path",
+            dense_dir,
+            "--workspace_format",
+            "COLMAP",
+            "--input_type",
+            "geometric",
+            "--output_path",
+            fused,
+            "--StereoFusion.use_cache",
+            "true",
+            "--StereoFusion.cache_size",
+            "2",
+            "--StereoFusion.num_threads",
+            "1",
+            "--StereoFusion.max_image_size",
+            "1200",
+        ])
 
     fused = dense_dir / "fused.ply"
     print(f"\nDense reconstruction is ready:\n{fused}")
@@ -637,7 +708,7 @@ def main():
         print("[SKIP] Y-up sparse model already exists.")
     else:
         run([
-            "python",
+            sys.executable,
             REPO_ROOT / "code" / "transform_colmap_yup.py",
             "--dataset",
             args.dataset,
@@ -655,7 +726,7 @@ def main():
         print("[SKIP] Y-up dense point cloud already exists.")
     else:
         run([
-            "python",
+            sys.executable,
             REPO_ROOT / "code" / "transform_pointcloud.py",
             "--dataset",
             args.dataset,
@@ -672,7 +743,7 @@ def main():
         print("[SKIP] Camera pose export already exists.")
     else:
         run([
-            "python",
+            sys.executable,
             REPO_ROOT / "code" / "export_dataset.py",
             "--dataset",
             args.dataset,
@@ -687,7 +758,7 @@ def main():
         print("[SKIP] Camera trajectory already exists.")
     else:
         run([
-            "python",
+            sys.executable,
             REPO_ROOT / "code" / "export_camera_trajectory.py",
             "--dataset",
             args.dataset,
