@@ -9,6 +9,28 @@ def parse_args():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--run", required=True)
     parser.add_argument("--matrix", required=True)
+    parser.add_argument(
+        "--no-auto-flip",
+        action="store_true",
+        help=(
+            "Do not use camera orientations to correct an upside-down "
+            "ground-plane orientation."
+        ),
+    )
+    parser.add_argument(
+        "--no-up-refinement",
+        action="store_true",
+        help="Do not fine-tune world up from the robust median camera-up.",
+    )
+    parser.add_argument(
+        "--max-up-refinement-deg",
+        type=float,
+        default=5.0,
+        help=(
+            "Maximum automatic camera-based up refinement. "
+            "Default: 5 degrees."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -58,6 +80,186 @@ def load_matrix(path):
     if matrix.shape != (4, 4):
         raise ValueError(f"Expected a 4x4 matrix in {path}, got {matrix.shape}")
     return matrix
+
+
+def read_camera_up_vectors(frames_file):
+    """Read image-up directions in the original COLMAP world coordinates."""
+    up_vectors = []
+    for line in frames_file.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        parts = stripped.split()
+        if len(parts) < 10:
+            continue
+
+        try:
+            int(parts[0])
+            int(parts[1])
+            q_rig_from_world = np.array(list(map(float, parts[2:6])))
+            list(map(float, parts[6:9]))
+        except ValueError:
+            # The second line belonging to a frame contains sensor data,
+            # not another pose.
+            continue
+
+        R_rig_from_world = qvec2rotmat(q_rig_from_world)
+        R_world_from_rig = R_rig_from_world.T
+
+        # COLMAP camera coordinates use +X right, +Y down and +Z forward.
+        # Therefore image-up is the negative camera/rig Y axis in world
+        # coordinates. The reference sensor is the rig for our single-camera
+        # reconstructions.
+        up_world = -R_world_from_rig[:, 1]
+        up_vectors.append(up_world)
+
+    return np.asarray(up_vectors, dtype=float)
+
+
+def normalized_rows(vectors):
+    vectors = np.asarray(vectors, dtype=float)
+    lengths = np.linalg.norm(vectors, axis=1)
+    valid = lengths > 1e-12
+    return vectors[valid] / lengths[valid, None]
+
+
+def robust_median_direction(vectors):
+    """Return a robust central unit direction and its inlier count."""
+    vectors = normalized_rows(vectors)
+    if len(vectors) == 0:
+        raise ValueError("No valid direction vectors")
+
+    center = np.median(vectors, axis=0)
+    center /= np.linalg.norm(center)
+
+    angles = np.degrees(np.arccos(np.clip(vectors @ center, -1.0, 1.0)))
+    median_angle = float(np.median(angles))
+    mad = float(np.median(np.abs(angles - median_angle)))
+    limit = median_angle + max(1.0, 3.0 * 1.4826 * mad)
+    inliers = vectors[angles <= limit]
+
+    center = np.median(inliers, axis=0)
+    center /= np.linalg.norm(center)
+    return center, len(inliers), len(vectors)
+
+
+def rotation_aligning_vectors(source, target):
+    """Return a proper 3x3 rotation mapping source onto target."""
+    source = np.asarray(source, dtype=float)
+    target = np.asarray(target, dtype=float)
+    source /= np.linalg.norm(source)
+    target /= np.linalg.norm(target)
+
+    cross = np.cross(source, target)
+    sine = float(np.linalg.norm(cross))
+    cosine = float(np.clip(source @ target, -1.0, 1.0))
+
+    if sine < 1e-12:
+        if cosine > 0:
+            return np.eye(3)
+        raise ValueError("Cannot choose a unique rotation for opposite vectors")
+
+    x, y, z = cross
+    K = np.array([
+        [0.0, -z, y],
+        [z, 0.0, -x],
+        [-y, x, 0.0],
+    ])
+    return np.eye(3) + K + (K @ K) * ((1.0 - cosine) / (sine * sine))
+
+
+def orient_ground_up(
+    T_world,
+    frames_file,
+    auto_flip=True,
+    refine_up=True,
+    max_refinement_degrees=5.0,
+):
+    """Resolve the up sign and optionally fine-tune it from camera poses."""
+    up_vectors = read_camera_up_vectors(frames_file)
+    if len(up_vectors) == 0:
+        print(
+            "WARNING: Could not read camera orientations; "
+            "the ground orientation was not checked."
+        )
+        return T_world
+
+    transformed_up = normalized_rows(
+        (T_world[:3, :3] @ up_vectors.T).T
+    )
+    up_y = transformed_up[:, 1]
+    median_up_y = float(np.median(up_y))
+    upright = int(np.count_nonzero(up_y > 0))
+
+    print(
+        "Ground-orientation check: "
+        f"median camera-up dot +Y = {median_up_y:.6f}; "
+        f"{upright}/{len(up_y)} cameras have image-up toward +Y."
+    )
+
+    if auto_flip and median_up_y < 0:
+        # A 180-degree rotation around X reverses Y and Z while preserving
+        # a right-handed coordinate system.
+        flip_y_and_z = np.array([
+            [1,  0,  0, 0],
+            [0, -1,  0, 0],
+            [0,  0, -1, 0],
+            [0,  0,  0, 1],
+        ], dtype=float)
+        T_world = flip_y_and_z @ T_world
+        print(
+            "Detected an upside-down ground orientation. "
+            "Applied a 180-degree rotation around the X axis."
+        )
+    elif auto_flip and abs(median_up_y) < 0.05:
+        print(
+            "WARNING: Camera orientations are nearly perpendicular to Y, so "
+            "the ground direction is uncertain. No automatic flip was applied."
+        )
+    elif auto_flip:
+        print("Ground orientation is already correct; no flip was needed.")
+
+    if not refine_up:
+        return T_world
+
+    if max_refinement_degrees < 0:
+        raise ValueError("--max-up-refinement-deg must be at least 0")
+
+    transformed_up = normalized_rows(
+        (T_world[:3, :3] @ up_vectors.T).T
+    )
+    median_up, inliers, total = robust_median_direction(transformed_up)
+    world_up = np.array([0.0, 1.0, 0.0])
+    refinement_degrees = float(np.degrees(np.arccos(
+        np.clip(median_up @ world_up, -1.0, 1.0)
+    )))
+
+    print(
+        "Camera-up refinement check: "
+        f"robust median differs from +Y by {refinement_degrees:.3f} degrees "
+        f"({inliers}/{total} inliers)."
+    )
+
+    if refinement_degrees < 1e-6:
+        print("No camera-up refinement was needed.")
+        return T_world
+
+    if refinement_degrees > max_refinement_degrees:
+        print(
+            "WARNING: Required up refinement exceeds "
+            f"{max_refinement_degrees:.3f} degrees; no refinement was applied."
+        )
+        return T_world
+
+    refinement = np.eye(4)
+    refinement[:3, :3] = rotation_aligning_vectors(median_up, world_up)
+    T_world = refinement @ T_world
+    print(
+        f"Applied camera-based up refinement: {refinement_degrees:.3f} degrees."
+    )
+
+    return T_world
 
 
 def transform_frames(input_file, output_file, R_world, t_world):
@@ -135,6 +337,15 @@ def main():
         [0, 0, 0, 1],
     ], dtype=float)
     T_world = T_z_to_y @ T_cc
+    frames_in = inp / "frames.txt"
+    if frames_in.exists():
+        T_world = orient_ground_up(
+            T_world,
+            frames_in,
+            auto_flip=not args.no_auto_flip,
+            refine_up=not args.no_up_refinement,
+            max_refinement_degrees=args.max_up_refinement_deg,
+        )
     R_world = T_world[:3, :3]
     t_world = T_world[:3, 3]
 
@@ -143,7 +354,6 @@ def main():
         if source.exists():
             (out / name).write_text(source.read_text())
 
-    frames_in = inp / "frames.txt"
     if frames_in.exists():
         transform_frames(frames_in, out / "frames.txt", R_world, t_world)
 
