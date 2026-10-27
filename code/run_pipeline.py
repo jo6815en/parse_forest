@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 import shutil
 import sqlite3
@@ -292,6 +293,66 @@ def choose_best_model(sparse_dir, colmap_bin):
     return scored[0][1], scored[0][0]
 
 
+def load_sparse_selection(selection_file, sparse_dir, input_image_count):
+    if not selection_file.exists():
+        return None
+
+    try:
+        selection = json.loads(selection_file.read_text(encoding="utf-8"))
+        model_name = str(selection["model_name"])
+        registered = int(selection["registered_images"])
+        saved_input_count = int(selection["input_images"])
+        incomplete_accepted = bool(selection["incomplete_model_accepted"])
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        print(
+            f"WARNING: Could not read saved sparse selection: {selection_file}"
+        )
+        return None
+
+    # Do not allow a path stored in the JSON file to escape sparse_dir.
+    if Path(model_name).name != model_name:
+        print(f"WARNING: Invalid saved sparse model name: {model_name}")
+        return None
+
+    model_dir = sparse_dir / model_name
+    if not (model_dir.is_dir() and (model_dir / "images.bin").exists()):
+        print(
+            "WARNING: The previously selected sparse model no longer exists; "
+            "selecting again."
+        )
+        return None
+
+    if saved_input_count != input_image_count:
+        print(
+            "WARNING: The number of input images has changed since the sparse "
+            "model was selected; selecting again."
+        )
+        return None
+
+    if registered < input_image_count and not incomplete_accepted:
+        return None
+
+    return model_dir, registered
+
+
+def save_sparse_selection(
+    selection_file,
+    best_model,
+    registered,
+    input_image_count,
+):
+    selection = {
+        "model_name": best_model.name,
+        "registered_images": registered,
+        "input_images": input_image_count,
+        "incomplete_model_accepted": registered < input_image_count,
+    }
+    selection_file.write_text(
+        json.dumps(selection, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def sparse_models_exist(sparse_dir):
     if not sparse_dir.exists():
         return False
@@ -412,6 +473,7 @@ def main():
     sparse_yup = colmap_dir / "sparse_yup_txt"
     reconstruction_dir = run_root / "reconstruction"
     matrix_copy = run_root / "transformation.txt"
+    sparse_selection_file = colmap_dir / "sparse_selection.json"
 
     images_dir.mkdir(parents=True, exist_ok=True)
     colmap_dir.mkdir(parents=True, exist_ok=True)
@@ -510,28 +572,57 @@ def main():
             sparse_dir,
         ])
 
-    best_model, registered = choose_best_model(
+    saved_selection = load_sparse_selection(
+        sparse_selection_file,
         sparse_dir,
-        colmap_bin,
+        len(images),
     )
 
-    print(
-        f"\nSelected sparse model {best_model.name} "
-        f"with {registered} registered images."
-    )
-
-    if registered < len(images):
-        coverage = 100.0 * registered / len(images)
+    if saved_selection is not None:
+        best_model, registered = saved_selection
         print(
-            f"\nWARNING: The best sparse model contains {registered} of "
-            f"{len(images)} input images ({coverage:.1f}%)."
+            f"[SKIP] Reusing accepted sparse model {best_model.name} "
+            f"with {registered} registered images."
         )
-        if not ask_yes_no("Continue with this incomplete sparse model?"):
+    else:
+        best_model, registered = choose_best_model(
+            sparse_dir,
+            colmap_bin,
+        )
+
+        print(
+            f"\nSelected sparse model {best_model.name} "
+            f"with {registered} registered images."
+        )
+
+        if registered < len(images):
+            coverage = 100.0 * registered / len(images)
             print(
-                "\nStopped after sparse reconstruction. "
-                "Inspect the sparse model before dense reconstruction."
+                f"\nWARNING: The best sparse model contains {registered} of "
+                f"{len(images)} input images ({coverage:.1f}%)."
             )
-            return
+
+            # Existing sparse_txt proves that this model was accepted in an
+            # earlier version of the pipeline, before the decision file was
+            # introduced. This lets old runs resume without asking again.
+            if sparse_txt_ready(sparse_txt):
+                print(
+                    "[SKIP] This incomplete sparse reconstruction was already "
+                    "accepted in an earlier pipeline run."
+                )
+            elif not ask_yes_no("Continue with this incomplete sparse model?"):
+                print(
+                    "\nStopped after sparse reconstruction. "
+                    "Inspect the sparse model before dense reconstruction."
+                )
+                return
+
+        save_sparse_selection(
+            sparse_selection_file,
+            best_model,
+            registered,
+            len(images),
+        )
 
     # ---------------------------------------------------------
     # 5. Sparse TXT conversion
@@ -556,7 +647,9 @@ def main():
         f"{registered} registered images."
     )
 
-    if not ask_yes_no("Run or resume dense reconstruction?"):
+    if dense_fused_ready(dense_dir):
+        print("[SKIP] Dense reconstruction is already complete.")
+    elif not ask_yes_no("Run or resume dense reconstruction?"):
         print(f"\nStopped after sparse reconstruction.\nRun directory: {run_root}")
         return
 

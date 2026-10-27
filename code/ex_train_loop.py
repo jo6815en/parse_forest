@@ -9,7 +9,7 @@ transform = transforms.Compose([
 ])
 
 dataset = ColmapPairDataset(
-    dataset_dir="dataset",
+    dataset_dir="datasets/torpa/reconstructions/video1_v1/reconstruction/rectified",
     transform=transform,
     return_names=True,
 )

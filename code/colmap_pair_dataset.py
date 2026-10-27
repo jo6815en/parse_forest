@@ -50,7 +50,18 @@ class ColmapPairDataset(Dataset):
         image_a = self.transform(image_a)
         image_b = self.transform(image_b)
 
-        T_ab = torch.tensor(item["T_ab"], dtype=torch.float32)
+        if "T_ab" in item:
+            pose = item["T_ab"]
+        elif "T_a_to_b" in item:
+            # Current export_dataset.py and batch_rectify.py use this clearer
+            # name. It has the same convention: camera A -> camera B.
+            pose = item["T_a_to_b"]
+        else:
+            raise KeyError(
+                "Relative-pose item contains neither 'T_ab' nor 'T_a_to_b'"
+            )
+
+        T_ab = torch.tensor(pose, dtype=torch.float32)
 
         sample = {
             "image_a": image_a,
