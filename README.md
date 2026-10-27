@@ -3,7 +3,7 @@
 The pipeline is resumable. Each run lives under:
 
 ```text
-datasets/<dataset>/reconstructions/YYYYMMDD_HHMMSS/
+datasets/<dataset>/reconstructions/<filename_version>/
 ```
 
 ## Start a new run
@@ -27,15 +27,8 @@ python code/run_pipeline.py --dataset torpa --resume
 Resume a specific run:
 
 ```bash
-python code/run_pipeline.py --dataset torpa --resume 20260824_142747
+python code/run_pipeline.py --dataset torpa --resume videoX_vX
 ```
-
-When resuming, `--video` is not required if the frames already exist. If a run has no frames, provide the video path as well:
-
-```bash
-python code/run_pipeline.py --dataset torpa --video video3.mp4 --resume 20260824_142747
-```
-
 ## What resume does
 
 The pipeline checks the filesystem/database before every step and skips work that is already complete:
@@ -73,7 +66,7 @@ The same final transformation is then applied to the sparse model, dense point c
 A completed run looks like:
 
 ```text
-datasets/torpa/reconstructions/20260824_142747/
+datasets/torpa/reconstructions/video1_v1/
 ├── images/
 ├── transformation.txt
 ├── colmap/
